@@ -93,6 +93,7 @@ export type InterviewStatus =
   | 'ROOM_ASSIGNED'
   | 'INTERVIEW_STARTED'
   | 'IN_PROGRESS'
+  | 'INTERVIEW_IN_PROGRESS'
   | 'INTERVIEW_COMPLETED'
   | 'COMPLETED'
   | 'CANCELLED';
@@ -253,6 +254,7 @@ export interface Candidate {
   totalDurationMinutes?: number;
   appointmentId?: string;
   currentInterviewId?: string;
+  recordVersion?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -370,7 +372,7 @@ export interface Notification {
 }
 
 export type PantryTaskType = 'ROOM_PREP' | 'WATER_BEVERAGE' | 'ROOM_RESET' | 'CUSTOM';
-export type PantryTaskStatus = 'PENDING' | 'IN_PROGRESS' | 'COMPLETED';
+export type PantryTaskStatus = 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED';
 
 export interface PantryTask {
   id: string;
@@ -382,6 +384,7 @@ export interface PantryTask {
   requiredItems: string[];
   priority: NotificationPriority;
   status: PantryTaskStatus;
+  notes?: string;
   createdAt: string;
   completedAt?: string;
   completedBy?: string;
@@ -405,6 +408,7 @@ export interface AuditLog {
   id: string;
   timestamp: string;
   actorType?: ActorType;
+  actorId?: string;
   actorUserId?: string;
   actorName: string;
   actorRole?: string;
@@ -414,6 +418,9 @@ export interface AuditLog {
   details: string;
   entityId?: string;
   entityType?: string;
+  previousStatus?: string;
+  newStatus?: string;
+  reason?: string;
   ipAddress?: string;
   metadata?: Record<string, any>;
 }

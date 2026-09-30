@@ -25,17 +25,20 @@ import {
   ShieldCheck,
   ShieldAlert,
   AlertCircle,
+  Archive,
+  Trash2,
 } from 'lucide-react';
 import type { AuditLog, RoleFieldVisibility, UserRole, PasswordResetRequest } from '../../types/index.ts';
 import { AdminChangeCredentialsModal } from '../AdminChangeCredentialsModal.tsx';
 import { AdminEditUserModal } from '../AdminEditUserModal.tsx';
+import { CandidateDossierModal } from '../CandidateDossierModal.tsx';
 
 interface AdminDashboardProps {
   onRefresh: () => void;
 }
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onRefresh }) => {
-  const [activeTab, setActiveTab] = useState<'users' | 'resets' | 'visibility' | 'audit' | 'settings'>('users');
+  const [activeTab, setActiveTab] = useState<'users' | 'resets' | 'archived' | 'visibility' | 'audit' | 'settings'>('users');
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [loadingLogs, setLoadingLogs] = useState(false);
   const [visibilitySettings, setVisibilitySettings] = useState<Record<UserRole, RoleFieldVisibility> | null>(null);
@@ -51,6 +54,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onRefresh }) => 
   const [loadingUsers, setLoadingUsers] = useState(false);
   const [selectedUserForCredentials, setSelectedUserForCredentials] = useState<any | null>(null);
   const [selectedUserForEdit, setSelectedUserForEdit] = useState<any | null>(null);
+
+  // Deleted / Archived Candidates State
+  const [deletedCandidates, setDeletedCandidates] = useState<any[]>([]);
+  const [loadingDeleted, setLoadingDeleted] = useState(false);
+  const [selectedArchivedCandidateId, setSelectedArchivedCandidateId] = useState<string | null>(null);
 
   // Password Reset Queue State
   const [resetRequests, setResetRequests] = useState<PasswordResetRequest[]>([]);
@@ -77,9 +85,25 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onRefresh }) => 
   useEffect(() => {
     fetchUsers();
     fetchResets();
+    fetchDeletedCandidates();
     fetchLogs();
     fetchSettings();
   }, []);
+
+  const fetchDeletedCandidates = async () => {
+    setLoadingDeleted(true);
+    try {
+      const res = await fetch('/api/admin/deleted-candidates?role=ADMIN');
+      const data = await res.json();
+      if (data.success) {
+        setDeletedCandidates(data.candidates);
+      }
+    } catch (err) {
+      console.error('Failed to load archived candidates', err);
+    } finally {
+      setLoadingDeleted(false);
+    }
+  };
 
   const fetchUsers = async () => {
     setLoadingUsers(true);
@@ -365,6 +389,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onRefresh }) => 
                 {pendingResetCount}
               </span>
             )}
+          </button>
+
+          <button
+            onClick={() => {
+              setActiveTab('archived');
+              fetchDeletedCandidates();
+            }}
+            className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition cursor-pointer flex items-center gap-1.5 ${
+              activeTab === 'archived'
+                ? 'bg-rose-500 text-white font-bold shadow-sm'
+                : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            <Archive className="w-3.5 h-3.5" />
+            <span>Archived Candidates ({deletedCandidates.length})</span>
           </button>
 
           <button
@@ -696,6 +735,102 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onRefresh }) => 
                       </tr>
                     );
                   })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* TAB: ARCHIVED / DELETED CANDIDATES */}
+      {activeTab === 'archived' && (
+        <div className="space-y-4">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                <Archive className="w-4 h-4 text-rose-400" />
+                Archived & Soft-Deleted Candidate Repository
+              </h3>
+              <p className="text-xs text-slate-400">
+                Candidates removed from active operations by Reception / Front Desk or HR. Full historical dossiers, audit events, and interview outcomes remain securely preserved.
+              </p>
+            </div>
+            <button
+              onClick={fetchDeletedCandidates}
+              className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold text-xs border border-slate-700 transition cursor-pointer flex items-center gap-1.5 shrink-0"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${loadingDeleted ? 'animate-spin' : ''}`} />
+              <span>Refresh Archive</span>
+            </button>
+          </div>
+
+          {deletedCandidates.length === 0 ? (
+            <div className="p-12 text-center bg-slate-900 border border-slate-800 rounded-3xl space-y-2">
+              <CheckCircle2 className="w-10 h-10 text-emerald-400 mx-auto" />
+              <h4 className="text-sm font-bold text-white">No Archived or Deleted Candidates</h4>
+              <p className="text-xs text-slate-400">
+                All registered candidates are active in the operations pipeline.
+              </p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto bg-slate-900 border border-slate-800 rounded-3xl shadow-xl">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-950/80 border-b border-slate-800 text-slate-300">
+                  <tr>
+                    <th className="p-4 font-bold">Candidate</th>
+                    <th className="p-4 font-bold">Position / Dept</th>
+                    <th className="p-4 font-bold">Deleted By</th>
+                    <th className="p-4 font-bold">Archival Reason</th>
+                    <th className="p-4 font-bold">Deleted At</th>
+                    <th className="p-4 font-bold text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/60">
+                  {deletedCandidates.map((cand) => (
+                    <tr key={cand.id} className="hover:bg-slate-800/30 transition">
+                      <td className="p-4">
+                        <div>
+                          <h4 className="font-bold text-white text-xs">{cand.fullName}</h4>
+                          <span className="text-[11px] text-slate-400 font-mono">ID: {cand.id}</span>
+                          <div className="flex items-center gap-1.5 mt-0.5">
+                            <span className="px-1.5 py-0.2 rounded-md bg-rose-500/10 text-rose-300 text-[10px] font-bold border border-rose-500/20">
+                              DELETED
+                            </span>
+                          </div>
+                        </div>
+                      </td>
+
+                      <td className="p-4">
+                        <span className="font-semibold text-amber-300 block">{cand.position}</span>
+                        <span className="text-[11px] text-slate-400">{cand.department || 'General'}</span>
+                      </td>
+
+                      <td className="p-4">
+                        <span className="font-medium text-slate-200 block">{cand.deletedByName || cand.deletedBy || 'Reception Desk'}</span>
+                        <span className="text-[10px] text-slate-400">Staff User</span>
+                      </td>
+
+                      <td className="p-4">
+                        <span className="px-2 py-1 rounded-lg bg-slate-950 border border-slate-800 text-amber-200/90 text-[11px] block max-w-xs truncate">
+                          {cand.deletionReason || 'Operational Archival'}
+                        </span>
+                      </td>
+
+                      <td className="p-4 text-slate-400">
+                        {cand.deletedAt ? new Date(cand.deletedAt).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) : 'Recently'}
+                      </td>
+
+                      <td className="p-4 text-right">
+                        <button
+                          onClick={() => setSelectedArchivedCandidateId(cand.id)}
+                          className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-cyan-300 font-bold text-xs rounded-xl border border-slate-700 transition cursor-pointer inline-flex items-center gap-1"
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                          <span>Inspect Dossier</span>
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
@@ -1134,6 +1269,20 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onRefresh }) => 
             </form>
           </div>
         </div>
+      )}
+
+      {/* MODAL: ARCHIVED CANDIDATE DOSSIER INSPECTOR */}
+      {selectedArchivedCandidateId && (
+        <CandidateDossierModal
+          candidateId={selectedArchivedCandidateId}
+          currentRole="ADMIN"
+          onClose={() => setSelectedArchivedCandidateId(null)}
+          onCandidateDeleted={() => {
+            setSelectedArchivedCandidateId(null);
+            fetchDeletedCandidates();
+            if (onRefresh) onRefresh();
+          }}
+        />
       )}
     </div>
   );

@@ -67,7 +67,8 @@ export const CandidateDossierModal: React.FC<CandidateDossierModalProps> = ({
   // Edit & Delete state
   const [isEditing, setIsEditing] = useState<boolean>(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<boolean>(false);
-  const [deleteReason, setDeleteReason] = useState<string>('Administrative Archive');
+  const [deleteReasonCategory, setDeleteReasonCategory] = useState<string>('Duplicate registration');
+  const [deleteReason, setDeleteReason] = useState<string>('Duplicate registration');
   const [actionError, setActionError] = useState<string | null>(null);
   const [savingEdit, setSavingEdit] = useState<boolean>(false);
   const [deleting, setDeleting] = useState<boolean>(false);
@@ -249,7 +250,10 @@ export const CandidateDossierModal: React.FC<CandidateDossierModalProps> = ({
           'x-user-role': currentRole,
           'x-user-name': currentRole === 'RECEPTION' ? 'Ananya Sen (Reception)' : (currentRole === 'HR' ? 'Nisha (HR)' : 'Admin'),
         },
-        body: JSON.stringify({ reason: deleteReason }),
+        body: JSON.stringify({
+          reason: deleteReasonCategory === 'Other' ? (deleteReason || 'Other reason') : deleteReasonCategory,
+          expectedVersion: candidate?.recordVersion,
+        }),
       });
       const data = await res.json();
       if (data.success) {
@@ -1063,7 +1067,7 @@ export const CandidateDossierModal: React.FC<CandidateDossierModalProps> = ({
 
       {/* DELETE CONFIRMATION MODAL */}
       {showDeleteConfirm && (
-        <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/85 backdrop-blur-xs p-4">
+        <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/85 backdrop-blur-xs p-4 animate-in fade-in duration-150">
           <div className="bg-slate-900 border border-rose-500/50 rounded-3xl p-6 max-w-md w-full space-y-4 text-slate-100 shadow-2xl">
             <div className="w-12 h-12 bg-rose-500/20 text-rose-400 border border-rose-500/40 rounded-full flex items-center justify-center mx-auto">
               <Trash2 className="w-6 h-6" />
@@ -1071,28 +1075,73 @@ export const CandidateDossierModal: React.FC<CandidateDossierModalProps> = ({
             <div className="text-center space-y-1.5">
               <h3 className="text-lg font-bold text-white">Delete Candidate?</h3>
               <p className="text-xs text-slate-300 font-medium">
-                Candidate: <strong className="text-amber-400">{candidate.fullName}</strong>
+                Candidate: <strong className="text-amber-400 font-bold">{candidate.fullName}</strong>
               </p>
-              <p className="text-xs text-slate-400 leading-relaxed">
-                This action will remove/archive this candidate from active operations.
+              <p className="text-xs text-slate-300 leading-relaxed">
+                Are you sure you want to delete/archive this candidate?
+              </p>
+              <p className="text-[11px] text-slate-400 leading-relaxed">
+                This action will update the candidate's database status and remove the candidate from active operational lists.
               </p>
             </div>
 
+            {/* Active Interview Warning */}
+            {(candidate.status === 'IN_INTERVIEW' || candidate.status === 'ROOM_ASSIGNED' || interviews.some(i => i.status === 'INTERVIEW_IN_PROGRESS')) && (
+              <div className="p-3 bg-amber-500/15 border border-amber-500/40 rounded-2xl text-amber-200 text-xs flex items-start gap-2.5">
+                <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                <div className="space-y-0.5">
+                  <strong className="block font-bold text-amber-300">Active Interview in Progress</strong>
+                  <p className="text-[11px] text-amber-200/90 leading-tight">
+                    This candidate currently has an active interview. Deleting will cancel the interview and trigger room reset & sanitization.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {actionError && (
+              <div className="p-3 bg-rose-500/15 border border-rose-500/40 rounded-2xl text-rose-300 text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>{actionError}</span>
+              </div>
+            )}
+
             <div>
-              <label className="block text-xs font-semibold text-slate-300 mb-1">Reason for Archival (Optional)</label>
-              <input
-                type="text"
-                value={deleteReason}
-                onChange={(e) => setDeleteReason(e.target.value)}
-                placeholder="e.g. Withdrawn by candidate / Duplicate application"
-                className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-xs text-white"
-              />
+              <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                Reason for Deletion / Archival <span className="text-rose-400">*</span>
+              </label>
+              <select
+                value={deleteReasonCategory}
+                onChange={(e) => {
+                  setDeleteReasonCategory(e.target.value);
+                  if (e.target.value !== 'Other') setDeleteReason(e.target.value);
+                }}
+                className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-xs text-white focus:outline-hidden focus:border-amber-400 mb-2 cursor-pointer"
+              >
+                <option value="Duplicate registration">Duplicate registration</option>
+                <option value="Candidate left premise">Candidate left premise / Walkout</option>
+                <option value="Incorrect registration">Incorrect registration</option>
+                <option value="Cancelled visit">Cancelled visit</option>
+                <option value="Other">Other (Specify below)</option>
+              </select>
+
+              {deleteReasonCategory === 'Other' && (
+                <input
+                  type="text"
+                  value={deleteReason}
+                  onChange={(e) => setDeleteReason(e.target.value)}
+                  placeholder="Enter specific archival reason..."
+                  className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-xs text-white focus:outline-hidden focus:border-amber-400"
+                />
+              )}
             </div>
 
             <div className="flex gap-2 pt-2">
               <button
                 type="button"
-                onClick={() => setShowDeleteConfirm(false)}
+                onClick={() => {
+                  setShowDeleteConfirm(false);
+                  setActionError(null);
+                }}
                 className="flex-1 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold text-xs rounded-xl transition cursor-pointer"
               >
                 Cancel

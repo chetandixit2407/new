@@ -18,6 +18,7 @@ import {
   AlertTriangle,
   User,
   Search,
+  Trash2,
 } from 'lucide-react';
 import type { Candidate, Room, Visitor } from '../../types/index.ts';
 import { ReceptionPhotoModal } from '../ReceptionPhotoModal.tsx';
@@ -49,7 +50,14 @@ export const ReceptionDashboard: React.FC<ReceptionDashboardProps> = ({
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [activeFilter, setActiveFilter] = useState<'ALL' | 'WAITING' | 'IN_MEETING' | 'CHECKOUT'>('ALL');
 
-  // Real-time EventSource listener for instant reception updates on new QR registrations
+  // Candidate Deletion State
+  const [candidateToDelete, setCandidateToDelete] = useState<Candidate | null>(null);
+  const [deleteReasonCategory, setDeleteReasonCategory] = useState<string>('Duplicate registration');
+  const [deleteReason, setDeleteReason] = useState<string>('Duplicate registration');
+  const [deletingCandidate, setDeletingCandidate] = useState<boolean>(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  // Real-time EventSource listener for instant reception updates
   useEffect(() => {
     const es = new EventSource('/api/events?role=RECEPTION');
     es.onmessage = (event) => {
@@ -61,7 +69,9 @@ export const ReceptionDashboard: React.FC<ReceptionDashboardProps> = ({
           data.type === 'CANDIDATE_LIVE_PHOTO_CAPTURED' ||
           data.type === 'ROOM_ASSIGNED' ||
           data.type === 'INTERVIEW_COMPLETED' ||
-          data.type === 'CANDIDATE_CHECKED_OUT'
+          data.type === 'CANDIDATE_CHECKED_OUT' ||
+          data.type === 'CANDIDATE_DELETED' ||
+          data.type === 'DASHBOARD_UPDATE'
         ) {
           if (onRefresh) onRefresh();
         }
@@ -74,6 +84,42 @@ export const ReceptionDashboard: React.FC<ReceptionDashboardProps> = ({
       es.close();
     };
   }, [onRefresh]);
+
+  const handleConfirmDeleteCandidate = async () => {
+    if (!candidateToDelete) return;
+    setDeletingCandidate(true);
+    setDeleteError(null);
+    try {
+      const res = await fetch(`/api/candidates/${candidateToDelete.id}?role=RECEPTION`, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-user-role': 'RECEPTION',
+          'x-user-name': 'Ananya Sen (Reception)',
+          'x-user-id': 'usr-rec-1',
+        },
+        body: JSON.stringify({
+          reason: deleteReasonCategory === 'Other' ? (deleteReason || 'Other reason') : deleteReasonCategory,
+          expectedVersion: candidateToDelete.recordVersion,
+        }),
+      });
+
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setCandidateToDelete(null);
+        if (selectedProfileCandidateId === candidateToDelete.id) {
+          setSelectedProfileCandidateId(null);
+        }
+        if (onRefresh) onRefresh();
+      } else {
+        setDeleteError(data.error || 'Failed to delete candidate.');
+      }
+    } catch (err: any) {
+      setDeleteError(err?.message || 'Network error while deleting candidate.');
+    } finally {
+      setDeletingCandidate(false);
+    }
+  };
 
   const filteredCandidates = candidates.filter((c) => {
     const matchesSearch =
@@ -328,6 +374,19 @@ export const ReceptionDashboard: React.FC<ReceptionDashboardProps> = ({
                         <Camera className="w-3.5 h-3.5" />
                         <span>{cand.arrivalPhoto ? 'Retake' : 'Capture Live Photo'}</span>
                       </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setCandidateToDelete(cand);
+                          setDeleteReasonCategory('Duplicate registration');
+                          setDeleteReason('Duplicate registration');
+                          setDeleteError(null);
+                        }}
+                        className="p-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 transition cursor-pointer"
+                        title="Delete Candidate (Reception Authority)"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -430,22 +489,131 @@ export const ReceptionDashboard: React.FC<ReceptionDashboardProps> = ({
                     </span>
                   </div>
 
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onCheckout(cand.id);
-                    }}
-                    className="w-full py-2 px-3 bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 text-slate-950 font-black text-xs rounded-xl shadow-md transition cursor-pointer flex items-center justify-center gap-1.5"
-                  >
-                    <LogOut className="w-3.5 h-3.5" />
-                    <span>Process Physical Checkout</span>
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onCheckout(cand.id);
+                      }}
+                      className="flex-1 py-2 px-3 bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 text-slate-950 font-black text-xs rounded-xl shadow-md transition cursor-pointer flex items-center justify-center gap-1.5"
+                    >
+                      <LogOut className="w-3.5 h-3.5" />
+                      <span>Process Physical Checkout</span>
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setCandidateToDelete(cand);
+                        setDeleteReasonCategory('Cancelled visit');
+                        setDeleteReason('Cancelled visit');
+                        setDeleteError(null);
+                      }}
+                      className="p-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 transition cursor-pointer shrink-0"
+                      title="Delete Candidate (Reception Authority)"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
                 </div>
               ))
             )}
           </div>
         </div>
       </div>
+
+      {/* RECEPTION DELETE CANDIDATE CONFIRMATION MODAL */}
+      {candidateToDelete && (
+        <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/85 backdrop-blur-xs p-4 animate-in fade-in duration-150">
+          <div className="bg-slate-900 border border-rose-500/50 rounded-3xl p-6 max-w-md w-full space-y-4 text-slate-100 shadow-2xl">
+            <div className="w-12 h-12 bg-rose-500/20 text-rose-400 border border-rose-500/40 rounded-full flex items-center justify-center mx-auto">
+              <Trash2 className="w-6 h-6" />
+            </div>
+            <div className="text-center space-y-1.5">
+              <h3 className="text-lg font-bold text-white">Delete Candidate?</h3>
+              <p className="text-xs text-slate-300 font-medium">
+                Candidate: <strong className="text-amber-400 font-bold">{candidateToDelete.fullName}</strong>
+              </p>
+              <p className="text-xs text-slate-300 leading-relaxed">
+                Are you sure you want to delete/archive this candidate?
+              </p>
+              <p className="text-[11px] text-slate-400 leading-relaxed">
+                This action will update the candidate's database status and remove the candidate from active operational lists.
+              </p>
+            </div>
+
+            {/* Active Interview Warning */}
+            {(candidateToDelete.status === 'IN_INTERVIEW' || candidateToDelete.status === 'ROOM_ASSIGNED') && (
+              <div className="p-3 bg-amber-500/15 border border-amber-500/40 rounded-2xl text-amber-200 text-xs flex items-start gap-2.5">
+                <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                <div className="space-y-0.5">
+                  <strong className="block font-bold text-amber-300">Active Interview in Progress</strong>
+                  <p className="text-[11px] text-amber-200/90 leading-tight">
+                    This candidate currently has an active interview in progress. Deleting will cancel the interview and trigger room reset & sanitization.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {deleteError && (
+              <div className="p-3 bg-rose-500/15 border border-rose-500/40 rounded-2xl text-rose-300 text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>{deleteError}</span>
+              </div>
+            )}
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                Reason for Deletion / Archival <span className="text-rose-400">*</span>
+              </label>
+              <select
+                value={deleteReasonCategory}
+                onChange={(e) => {
+                  setDeleteReasonCategory(e.target.value);
+                  if (e.target.value !== 'Other') setDeleteReason(e.target.value);
+                }}
+                className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-xs text-white focus:outline-hidden focus:border-amber-400 mb-2 cursor-pointer"
+              >
+                <option value="Duplicate registration">Duplicate registration</option>
+                <option value="Candidate left premise">Candidate left premise / Walkout</option>
+                <option value="Incorrect registration">Incorrect registration</option>
+                <option value="Cancelled visit">Cancelled visit</option>
+                <option value="Other">Other (Specify below)</option>
+              </select>
+
+              {deleteReasonCategory === 'Other' && (
+                <input
+                  type="text"
+                  value={deleteReason}
+                  onChange={(e) => setDeleteReason(e.target.value)}
+                  placeholder="Enter specific archival reason..."
+                  className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-xs text-white focus:outline-hidden focus:border-amber-400"
+                />
+              )}
+            </div>
+
+            <div className="flex gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setCandidateToDelete(null);
+                  setDeleteError(null);
+                }}
+                className="flex-1 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold text-xs rounded-xl transition cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDeleteCandidate}
+                disabled={deletingCandidate}
+                className="flex-1 py-2.5 bg-gradient-to-r from-rose-500 to-rose-600 hover:from-rose-400 hover:to-rose-500 text-white font-black text-xs rounded-xl shadow-lg transition cursor-pointer flex items-center justify-center gap-1"
+              >
+                {deletingCandidate ? 'Deleting...' : 'Confirm Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Reception Candidate Profile Modal (CandidateDossierModal) */}
       {selectedProfileCandidateId && (

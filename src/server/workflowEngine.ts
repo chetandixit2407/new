@@ -1229,14 +1229,27 @@ class EventWorkflowEngine {
     });
   }
 
-  broadcastCandidateDeleted(candidateId: string, candidateName: string, deletedBy: string) {
+  broadcastCandidateDeleted(candidateId: string, candidateName: string, deletedBy: string, details?: { previousStatus?: string; deletedByName?: string; reason?: string; version?: number }) {
+    const timestamp = new Date().toISOString();
     this.broadcast({
       type: 'CANDIDATE_DELETED',
-      payload: { candidateId, candidateName, deletedBy, timestamp: new Date().toISOString() },
+      payload: {
+        eventId: `ev-del-${Date.now()}`,
+        candidateId,
+        candidateName,
+        previousStatus: details?.previousStatus || 'UNKNOWN',
+        newStatus: 'DELETED',
+        deletedBy,
+        deletedByName: details?.deletedByName || deletedBy,
+        reason: details?.reason || 'Operational / Administrative Archival',
+        version: details?.version || 1,
+        deletedAt: timestamp,
+        timestamp,
+      },
     });
     this.broadcast({
       type: 'DASHBOARD_UPDATE',
-      payload: { action: 'CANDIDATE_DELETED', candidateId },
+      payload: { action: 'CANDIDATE_DELETED', candidateId, timestamp },
     });
   }
 }

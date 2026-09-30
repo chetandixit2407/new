@@ -2965,6 +2965,31 @@ async function startServer() {
   app.get('/api/candidates', handleGetCandidates);
   app.get('/api/staff/candidates', handleGetCandidates);
 
+  // ==========================================
+  // DELETED / ARCHIVED CANDIDATES VIEW (ADMIN, HR, CEO)
+  // ==========================================
+  app.get('/api/admin/deleted-candidates', (req: Request, res: Response) => {
+    const role = (req.headers['x-user-role'] || req.query.role) as UserRole;
+    if (!role || !['ADMIN', 'CEO', 'CO_FOUNDER', 'HR'].includes(role)) {
+      return res.status(403).json({ success: false, error: 'Unauthorized: Admin or Executive role required.' });
+    }
+
+    const db = dbService.get();
+    const deletedCandidates = db.candidates
+      .filter((c) => (c as any).isDeleted || c.status === 'DELETED')
+      .map((cand) => {
+        const relatedInterviews = db.interviews.filter((i) => i.candidateId === cand.id);
+        const relatedTimeline = db.timelineEvents.filter((t) => t.candidateId === cand.id);
+        return {
+          ...cand,
+          interviewsCount: relatedInterviews.length,
+          timelineCount: relatedTimeline.length,
+        };
+      });
+
+    res.json({ success: true, candidates: deletedCandidates, total: deletedCandidates.length });
+  });
+
   app.get('/api/candidates/:id', (req: Request, res: Response) => {
     const { id } = req.params;
     const role = (req.headers['x-user-role'] || req.query.role) as UserRole;
@@ -3165,14 +3190,15 @@ async function startServer() {
   app.patch('/api/candidates/:id', handleCandidateUpdate);
 
   // ==========================================
-  // CANDIDATE DELETE / ARCHIVE (RECEPTION, HR, ADMIN)
+  // CANDIDATE DELETE / ARCHIVE (FRONT DESK / RECEPTION, HR, ADMIN)
   // ==========================================
   app.delete('/api/candidates/:id', (req: Request, res: Response) => {
     const { id } = req.params;
     const actorRole = (req.headers['x-user-role'] || req.query.role || req.body?.role) as UserRole;
     const actorUserId = (req.headers['x-user-id'] || req.query.userId || req.body?.userId) as string;
     const actorName = (req.headers['x-user-name'] || req.query.userName || req.body?.userName || `${actorRole} User`) as string;
-    const reason = req.body?.reason || 'Operational / Administrative Archive';
+    const reason = req.body?.reason || 'Operational archive by Front Desk / Reception';
+    const expectedVersion = req.body?.expectedVersion;
 
     const db = dbService.get();
     const callerUser = actorUserId ? db.users.find((u) => u.id === actorUserId || u.userId === actorUserId) : null;
@@ -3203,53 +3229,180 @@ async function startServer() {
 
     try {
       let deletedName = '';
+      let previousStatus = '';
+      let recordVer = 1;
+      let cleanedRoomName = '';
+
       dbService.update((draft) => {
         const cand = draft.candidates.find((c) => c.id === id);
-        if (!cand || (cand as any).isDeleted) {
-          throw new Error('Candidate not found or already deleted');
+        if (!cand) {
+          throw new Error('Candidate not found');
         }
 
-        if (cand.status === 'IN_INTERVIEW' || cand.status === 'ROOM_ASSIGNED') {
-          throw new Error('Cannot delete candidate while an interview or room assignment is actively in progress.');
+        if (cand.status === 'DELETED' || (cand as any).isDeleted) {
+          throw new Error('Candidate is already deleted/archived.');
+        }
+
+        // Concurrency & Optimistic locking check
+        if (expectedVersion !== undefined && cand.recordVersion && cand.recordVersion !== expectedVersion) {
+          const err: any = new Error('Candidate record was modified concurrently. Please refresh and retry.');
+          err.statusCode = 409;
+          throw err;
         }
 
         deletedName = cand.fullName;
-        cand.isDeleted = true;
-        (cand as any).deletedAt = timestamp;
-        (cand as any).deletedBy = actorUserId || effectiveRole;
-        (cand as any).deletedByName = actorName;
-        (cand as any).deletionReason = reason;
-        cand.status = 'DELETED';
-        cand.updatedAt = timestamp;
+        previousStatus = cand.status;
+        recordVer = (cand.recordVersion || 1) + 1;
 
+        // 1. Update Candidate canonical state
+        cand.status = 'DELETED';
+        cand.isDeleted = true;
+        cand.deletedAt = timestamp;
+        cand.deletedBy = actorUserId || effectiveRole;
+        cand.deletedByName = actorName;
+        cand.deletionReason = reason;
+        cand.updatedAt = timestamp;
+        cand.recordVersion = recordVer;
+
+        // 2. Active Interview Cleanup & Safety
+        const activeInterviews = draft.interviews.filter(
+          (i) => i.candidateId === id && (i.status === 'INTERVIEW_IN_PROGRESS' || i.status === 'CANDIDATE_ARRIVED' || i.status === 'SCHEDULED')
+        );
+
+        for (const intv of activeInterviews) {
+          intv.status = 'CANCELLED';
+          (intv as any).cancelledAt = timestamp;
+          (intv as any).cancellationReason = `Candidate record deleted/archived by ${actorName}: ${reason}`;
+          intv.updatedAt = timestamp;
+
+          // Notify assigned next interviewer if scheduled
+          if (intv.interviewerId && intv.interviewerId !== actorUserId) {
+            draft.notifications.unshift({
+              id: `notif-${Date.now()}-intv-cancel-${intv.id}`,
+              recipientRole: 'INTERVIEWER',
+              recipientUserId: intv.interviewerId,
+              title: `Interview Cancelled: ${deletedName}`,
+              message: `Candidate ${deletedName}'s scheduled interview (${intv.roundName}) has been cancelled because the candidate record was deleted/archived by Front Desk/Reception.`,
+              priority: 'HIGH',
+              eventType: 'INTERVIEW_CANCELLED',
+              entityId: intv.id,
+              entityType: 'INTERVIEW',
+              read: false,
+              createdAt: timestamp,
+            });
+          }
+
+          // Room safety: If room was actively occupied / assigned, transition to RESET_REQUIRED
+          if (intv.roomId) {
+            const room = draft.rooms.find((r) => r.id === intv.roomId);
+            if (room) {
+              cleanedRoomName = room.name;
+              room.status = 'RESET_REQUIRED';
+              room.resetPending = true;
+              room.currentCandidateId = undefined;
+              room.currentCandidateName = undefined;
+              room.currentInterviewId = undefined;
+              room.lastOccupantName = deletedName;
+              room.nextAction = 'Room sanitization & reset required after candidate archival';
+
+              draft.pantryTasks.unshift({
+                id: `pantry-reset-${Date.now()}-${room.id}`,
+                roomId: room.id,
+                roomName: room.name,
+                candidateName: deletedName,
+                taskType: 'ROOM_RESET',
+                description: `Sanitize and reset ${room.name} following candidate record archival (${deletedName}).`,
+                requiredItems: ['Clear used glasses & supplies', 'Sanitize surfaces', 'Reset room layout'],
+                priority: 'HIGH',
+                status: 'PENDING',
+                createdAt: timestamp,
+              });
+
+              draft.notifications.unshift({
+                id: `notif-${Date.now()}-pantry-del-room`,
+                recipientRole: 'PANTRY',
+                title: `Room Sanitization Required: ${room.name}`,
+                message: `Candidate ${deletedName} was archived. Please reset and sanitize ${room.name}.`,
+                priority: 'HIGH',
+                eventType: 'ROOM_STATUS_CHANGED',
+                entityId: room.id,
+                entityType: 'ROOM',
+                read: false,
+                createdAt: timestamp,
+              });
+            }
+          }
+        }
+
+        // Also check any room directly referencing this candidate
+        const directlyOccupiedRooms = draft.rooms.filter((r) => r.currentCandidateId === id);
+        for (const room of directlyOccupiedRooms) {
+          cleanedRoomName = room.name;
+          room.status = 'RESET_REQUIRED';
+          room.resetPending = true;
+          room.currentCandidateId = undefined;
+          room.currentCandidateName = undefined;
+          room.currentInterviewId = undefined;
+          room.lastOccupantName = deletedName;
+          room.nextAction = 'Room reset required after candidate archival';
+        }
+
+        // 3. Pantry Task Cleanup (Cancel pending beverage/welcome orders for candidate)
+        for (const task of draft.pantryTasks) {
+          if ((task.candidateName === deletedName || (task as any).candidateId === id) && task.taskType !== 'ROOM_RESET' && task.status === 'PENDING') {
+            task.status = 'CANCELLED';
+            task.notes = `Task cancelled due to candidate deletion: ${reason}`;
+          }
+        }
+
+        // 4. Immutable Timeline and Audit History
         draft.timelineEvents.unshift({
           id: `tl-${Date.now()}-del`,
           candidateId: id,
           timestamp,
           actorType: 'USER',
           actorName: actorName,
-          eventType: 'CANDIDATE_ARCHIVED',
-          description: `Candidate record archived/deleted by ${actorName} (${effectiveRole}). Reason: ${reason}.`,
+          eventType: 'CANDIDATE_DELETED',
+          description: `Candidate record archived/deleted by ${actorName} (${effectiveRole}). Previous Status: ${previousStatus}. Reason: ${reason}.`,
         });
 
         draft.auditLogs.unshift({
           id: `aud-${Date.now()}-del`,
           timestamp,
           actorType: 'USER',
+          actorId: actorUserId,
           actorName: actorName,
           actorRole: effectiveRole,
           action: 'CANDIDATE_DELETED',
-          details: `Candidate ${id} (${deletedName}) was soft-deleted/archived by ${actorName} (${effectiveRole}). Reason: ${reason}.`,
+          details: `Candidate ${id} (${deletedName}) was deleted/archived by ${actorName} (${effectiveRole}). Reason: ${reason}. Previous status: ${previousStatus}.`,
           entityId: id,
           entityType: 'CANDIDATE',
+          previousStatus,
+          newStatus: 'DELETED',
+          reason,
         });
       });
 
-      eventWorkflowEngine.broadcastCandidateDeleted(id, deletedName, actorName);
+      // 5. Realtime SSE Broadcast to all authorized dashboards
+      eventWorkflowEngine.broadcastCandidateDeleted(id, deletedName, actorUserId || effectiveRole, {
+        previousStatus,
+        deletedByName: actorName,
+        reason,
+        version: recordVer,
+      });
 
-      res.json({ success: true, message: `Candidate ${deletedName} successfully archived.` });
+      res.json({
+        success: true,
+        message: `Candidate ${deletedName} successfully deleted/archived.`,
+        candidateId: id,
+        previousStatus,
+        status: 'DELETED',
+        deletedBy: actorName,
+        deletedAt: timestamp,
+      });
     } catch (err: any) {
-      res.status(400).json({ success: false, error: err.message || 'Failed to archive candidate' });
+      const code = err.statusCode || 400;
+      res.status(code).json({ success: false, error: err.message || 'Failed to delete/archive candidate.' });
     }
   });
 
